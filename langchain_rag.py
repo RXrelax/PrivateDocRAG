@@ -41,7 +41,7 @@ def vector_store(text_chunks):
     vector_store.save_local("faiss_db")
 
 def get_conversational_chain(tools, ques):
-    llm = init_chat_model("deepseek-reasoner", model_provider="deepseek")
+    llm = init_chat_model("deepseek-chat", model_provider="deepseek")
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
