@@ -1,0 +1,16 @@
+
+{
+  "emeraldwalk.runonsave": {
+    "autoClearConsole": true,
+    "autoShowOutputPanel": "always",
+    "commands": [
+      {
+        "match": "\\.py$",
+        "cmd": "streamlit run langchain_rag.py",
+        "message": "▶ Running Streamlit...",
+        "messageAfter": "✔ Streamlit started",
+        "showElapsed": true
+      }
+    ]
+  }
+}

@@ -1,197 +1,190 @@
+import os
+import shutil
 import streamlit as st
+from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_community.vectorstores import FAISS
-from langchain.tools.retriever import create_retriever_tool
-from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_community.embeddings import DashScopeEmbeddings
+from langchain_community.vectorstores import FAISS
 from langchain.chat_models import init_chat_model
-import os
-from dotenv import load_dotenv 
-load_dotenv(override=True)
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.callbacks.streamlit import StreamlitCallbackHandler
+from langchain.callbacks.manager import CallbackManager
 
+# 加载环境变量
+dotenv_path = os.getenv('DOTENV_PATH', None)
+if dotenv_path:
+    load_dotenv(dotenv_path)
+else:
+    load_dotenv(override=True)
 
-DeepSeek_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-dashscope_api_key = os.getenv("dashscope_api_key")
+# 从环境变量获取 API Key
+dashscope_api_key = os.getenv('DASHSCOPE_API_KEY')
 
-os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+# 允许 KMP 重复加载以避免冲突
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
-
+# 初始化 Embeddings
 embeddings = DashScopeEmbeddings(
-    model="text-embedding-v1", dashscope_api_key=dashscope_api_key
+    model='text-embedding-v1',
+    dashscope_api_key=dashscope_api_key
 )
 
-def pdf_read(pdf_doc):
+# 系统提示词模板
+system_prompt = (
+    "你是一个 AI 助手，只能从下方提供的上下文文本中获取信息来回答用户提问。请严格按照以下步骤执行："
+    "理解问题：准确识别用户问题的核心。"
+    "检索上下文：在提供的文本中查找所有相关内容，记录对应位置（如段落号、行号或关键词）。"
+    "构建回答："
+    "如果上下文中能完整回答问题，则："
+    "用明了但详细的语言输出答案。"
+    "如果上下文中 确实没有 涉及问题所需信息，则只输出："
+    "答案不在上下文中"
+    "绝不输出任何脱离上下文的推测或信息。"
+    "格式要求："
+    "回答时不要添加与问题无关的介绍或总结；严格按照上面“能回答”／“答案不在上下文中”二选一；"
+)
+prompt_template = ChatPromptTemplate.from_messages([
+    ('system', system_prompt),
+    ('human', '上下文如下：\n{context}\n\n问题：{question}')
+])
+
+def process_pdfs(pdf_files):
+    """
+    读取上传的 PDF 文件，抽取文本，分割成片段，构建 FAISS 索引。
+    返回分割出的文本片段数量。
+    """
     text = ""
-    for pdf in pdf_doc:
-        pdf_reader = PdfReader(pdf)
-        for page in pdf_reader.pages:
-            text += page.extract_text()
-    return text
+    for pdf_file in pdf_files:
+        reader = PdfReader(pdf_file)
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text
 
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunks = splitter.split_text(text)
 
-def get_chunks(text):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = text_splitter.split_text(text)
-    return chunks
+    store = FAISS.from_texts(chunks, embedding=embeddings)
+    # 删除旧索引
+    if os.path.isdir('faiss_db'):
+        shutil.rmtree('faiss_db', ignore_errors=True)
+    store.save_local('faiss_db')
 
-def vector_store(text_chunks):
-    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local("faiss_db")
+    return len(chunks)
 
-def get_conversational_chain(tools, ques):
-    llm = init_chat_model("deepseek-chat", model_provider="deepseek")
-    prompt = ChatPromptTemplate.from_messages([
-        (
-            "system",
-            """你是AI助手，请根据提供的上下文回答问题，确保详细完整的提供所有细节，如果答案不在上下文中，请说"答案不在上下文中"，不要提供错误的答案。 """,
-        ),
-        ("placeholder", "{chat_history}"),
-        ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ])
-    
-    tool = [tools]
-    agent = create_tool_calling_agent(llm, tool, prompt)
-    agent_executor = AgentExecutor(agent=agent, tools=tool, verbose=True)
-    
-    response = agent_executor.invoke({"input": ques})
-    print(response)
-    st.write("🤖 : ", response['output']) #输出结果前的内容
+def get_chain():
+    """
+    加载本地 FAISS 索引，创建 Retriever、LLM、Memory，并组装成 ConversationalRetrievalChain。
+    """
+    db = FAISS.load_local(
+        'faiss_db',
+        embeddings,
+        allow_dangerous_deserialization=True
+    )
+    retriever = db.as_retriever()
 
-def check_database_exists():
-    """检查FAISS数据库是否存在"""
-    return os.path.exists("faiss_db") and os.path.exists("faiss_db/index.faiss")
+    # Streamlit 实时流式回调
+    streamlit_handler = StreamlitCallbackHandler(st.container())
+    cb_manager = CallbackManager([streamlit_handler])
 
-def user_input(user_question):
-    # 检查数据库是否存在
-    if not check_database_exists():
-        st.error("❌ 请先上传PDF文件并点击'Submit & Process'按钮来处理文档！")
-        st.info("💡 步骤：1️⃣ 上传PDF → 2️⃣ 点击处理 → 3️⃣ 开始提问")
-        return
-    
-    try:
-        # 加载FAISS数据库
-        new_db = FAISS.load_local("faiss_db", embeddings, allow_dangerous_deserialization=True)
-        
-        retriever = new_db.as_retriever()
-        retrieval_chain = create_retriever_tool(retriever, "pdf_extractor", "This tool is to give answer to queries from the pdf")
-        get_conversational_chain(retrieval_chain, user_question)
-        
-    except Exception as e:
-        st.error(f"❌ 加载数据库时出错: {str(e)}")
-        st.info("请重新处理PDF文件")
+    # 初始化聊天模型（开启流式输出）
+    llm = init_chat_model(
+        'deepseek-reasoner',
+        model_provider='deepseek',
+        streaming=True,
+        callback_manager=cb_manager
+    )
+
+    # 对话记忆
+    memory = ConversationBufferMemory(
+        memory_key='chat_history',
+        return_messages=True
+    )
+    # 如果已有历史，就注入
+    if 'history' in st.session_state:
+        memory.chat_memory.messages = st.session_state['history']
+
+    chain = ConversationalRetrievalChain.from_llm(
+        llm=llm,
+        retriever=retriever,
+        memory=memory,
+        combine_docs_chain_kwargs={
+            'prompt': prompt_template,
+            'document_variable_name': 'context'
+        },
+        verbose=True,
+        return_source_documents=False
+    )
+
+    return chain
+
+def db_exists():
+    """
+    检查本地 FAISS 索引是否已存在。
+    """
+    return os.path.isdir('faiss_db') and os.path.exists('faiss_db/index.faiss')
 
 def main():
-    st.set_page_config("🤖 By Ren")
-    st.header(" By    _    ᴿₓ")
-    
-    # 显示数据库状态
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        if check_database_exists():
-           pass
-        else:
-            st.warning("⚠️ 请先上传并处理PDF文件")
-    
-    with col2:
-        if st.button("🗑️ 清除数据库"):
-            try:
-                import shutil
-                if os.path.exists("faiss_db"):
-                    shutil.rmtree("faiss_db")
-                st.success("数据库已清除")
-                st.rerun()
-            except Exception as e:
-                st.error(f"清除失败: {e}")
+    st.set_page_config(page_title='PDF RAG Chatbot', page_icon='🤖')
+    st.title('PDF RAG AI 询问系统')
 
-    # 用户问题输入
-    user_question = st.text_input("💬 请输入问题", 
-                                  placeholder="例如：这个文档的主要内容是什么？",
-                                  disabled=not check_database_exists())
+    # 侧边栏：文档管理
+    st.sidebar.header('文档管理')
+    pdf_files = st.sidebar.file_uploader(
+        '📎 上传 PDF 文件',
+        accept_multiple_files=True,
+        type=['pdf']
+    )
 
-    if user_question:
-        if check_database_exists():
-            with st.spinner("🤔 AI正在分析文档..."):
-                user_input(user_question)
-        else:
-            st.error("❌ 请先上传并处理PDF文件！")
+    # 处理上传按钮
+    if st.sidebar.button('🚀 Submit & Process', disabled=not pdf_files):
+        with st.spinner('📊 正在处理 PDF...'):
+            count = process_pdfs(pdf_files)
+            st.sidebar.success(f'✅ 分割出 {count} 个文本片段，向量索引已完成')
+            # 清空历史，强制重跑
+            if 'history' in st.session_state:
+                del st.session_state['history']
+            st.rerun()
 
-    # 侧边栏
-    with st.sidebar:
-        st.title("📁 文档管理")
-        
-        # 显示当前状态
-        if check_database_exists():
-            st.success("✅ 数据库状态：已就绪")
+    # 清除数据库按钮
+    if st.sidebar.button('🗑️ 清除数据库'):
+        if db_exists():
+            shutil.rmtree('faiss_db', ignore_errors=True)
+            st.sidebar.success('🗑️ 数据库已清除')
+            if 'history' in st.session_state:
+                del st.session_state['history']
+            st.rerun()
         else:
-            st.info("📝 状态：等待上传PDF")
-        
-        st.markdown("---")
-        
-        # 文件上传
-        pdf_doc = st.file_uploader(
-            "📎 上传PDF文件", 
-            accept_multiple_files=True,
-            type=['pdf'],
-            help="支持上传多个PDF文件"
+            st.sidebar.info('无需清除，数据库不存在')
+
+    # 索引状态提示
+    if db_exists():
+        st.sidebar.success('✅ 数据库状态：已就绪')
+    else:
+        st.sidebar.warning('⚠️ 请先上传并处理 PDF 文件')
+
+    # 主界面：提问聊天
+    if db_exists():
+        chain = get_chain()
+        if 'history' not in st.session_state:
+            st.session_state['history'] = []
+
+        user_question = st.text_input(
+            '💬 请输入问题',
+            placeholder='例如：这个文档的主要内容是什么？'
         )
-        
-        if pdf_doc:
-            st.info(f"📄 已选择 {len(pdf_doc)} 个文件")
-            for i, pdf in enumerate(pdf_doc, 1):
-                st.write(f"{i}. {pdf.name}")
-        
-        # 处理按钮
-        process_button = st.button(
-            "🚀 提交并处理", 
-            disabled=not pdf_doc,
-            use_container_width=True
-        )
-        
-        if process_button:
-            if pdf_doc:
-                with st.spinner("📊 正在处理PDF文件..."):
-                    try:
-                        # 读取PDF内容
-                        raw_text = pdf_read(pdf_doc)
-                        
-                        if not raw_text.strip():
-                            st.error("❌ 无法从PDF中提取文本，请检查文件是否有效")
-                            return
-                        
-                        # 分割文本
-                        text_chunks = get_chunks(raw_text)
-                        st.info(f"📝 文本已分割为 {len(text_chunks)} 个片段")
-                        
-                        # 创建向量数据库
-                        vector_store(text_chunks)
-                        
-                        st.success("✅ PDF处理完成！现在可以开始提问了")
-                        st.balloons()
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"❌ 处理PDF时出错: {str(e)}")
-            else:
-                st.warning("⚠️ 请先选择PDF文件")
-        
-        # 使用说明
-        with st.expander("💡 使用说明"):
-            st.markdown("""
-            **步骤：**
-            1. 📎 上传一个或多个PDF文件
-            2. 🚀 点击"Submit & Process"处理文档
-            3. 💬 在主页面输入您的问题
-            4. 🤖 AI将基于PDF内容回答问题
-            
-            **提示：**
-            - 支持多个PDF文件同时上传
-            - 处理大文件可能需要一些时间
-            - 可以随时清除数据库重新开始
-            """)
 
-if __name__ == "__main__":
+        if user_question:
+            with st.spinner('🤔 AI 正在思考...'):
+                result = chain({'question': user_question})
+                answer = result['answer']
+                st.session_state['history'] = result['chat_history']
+                st.markdown(f'**🤖 AI:** {answer}')
+    else:
+        st.write('请通过侧边栏上传并处理 PDF，然后开始提问。')
+
+if __name__ == '__main__':
     main()
