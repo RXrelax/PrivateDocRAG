@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Python on Save",
+      "type": "shell",
+      "command": "streamlit run \"${file}\"",
+      "presentation": { "echo": true, "reveal": "always" },
+      "problemMatcher": [],
+      "isBackground": true,
+      "watching": {
+        "watch": "${file}",
+        "watchingOn": "file"
+      }
+    }
+  ]
+}
