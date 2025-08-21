@@ -6,14 +6,17 @@ from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import DashScopeEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_experimental.graph_transformers import LLMGraphTransformer
+from langchain_community.graphs import Neo4jGraph
+from langchain_core.documents import Document
+from langchain.chains import GraphQAChain
 from langchain.chat_models import init_chat_model
-from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.callbacks.streamlit import StreamlitCallbackHandler
 from langchain.callbacks.manager import CallbackManager
 from langchain.document_loaders import TextLoader
+from graphdatascience import GraphDataScience  # For community detection
 
 # —— 加载环境变量 —— #
 dotenv_path = os.getenv('DOTENV_PATH', None)
@@ -21,8 +24,11 @@ if dotenv_path:
     load_dotenv(dotenv_path)
 else:
     load_dotenv(override=True)
-
 dashscope_api_key = os.getenv('DASHSCOPE_API_KEY')
+deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')  # 添加DeepSeek专用key，如果与DASHSCOPE不同
+neo4j_uri = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
+neo4j_username = os.getenv('NEO4J_USERNAME', 'neo4j')
+neo4j_password = os.getenv('NEO4J_PASSWORD', 'password')  # 默认密码，实际应从env中安全加载
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 # —— Embeddings & Prompt 模板 —— #
@@ -47,10 +53,11 @@ prompt_template = ChatPromptTemplate.from_messages([
     ('human', '上下文如下：\n{context}\n\n问题：{question}')
 ])
 
-# —— 处理上传文档，并构建 FAISS 索引 —— #
+# —— 处理上传文档，并构建知识图谱 —— #
 def process_documents(uploaded_files):
     text = ""
     for file in uploaded_files:
+        st.sidebar.info(f"📄 处理文件: {file.name}")
         if file.type == "application/pdf":
             reader = PdfReader(file)
             for page in reader.pages:
@@ -71,81 +78,115 @@ def process_documents(uploaded_files):
                 pass
         else:
             st.sidebar.warning(f"跳过不支持的文件类型：{file.name} ({file.type})")
-
-    st.sidebar.write(f"🔍 原始文本长度：{len(text)} 字符")
+    st.sidebar.info(f"🔍 原始文本长度：{len(text)} 字符")
     splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
     chunks = splitter.split_text(text)
-    st.sidebar.write(f"📦 分割得到 {len(chunks)} 个文本片段")
-
+    st.sidebar.info(f"📦 分割得到 {len(chunks)} 个文本片段")
     if not chunks:
         st.sidebar.error("🚨 没有从上传的文件中抽取到任何文本，请检查文件内容是否可读。")
         return 0
 
-    store = FAISS.from_texts(chunks, embedding=embeddings)
-    if os.path.isdir('faiss_db'):
-        shutil.rmtree('faiss_db', ignore_errors=True)
-    store.save_local('faiss_db')
-    return len(chunks)
+    # 初始化 LLM 和 GraphTransformer
+    try:
+        st.sidebar.info("🤖 初始化 LLM 和 GraphTransformer...")
+        llm = init_chat_model('deepseek-reasoner', model_provider='deepseek', api_key=deepseek_api_key)  # 指定api_key如果需要
+        transformer = LLMGraphTransformer(
+            llm=llm,
+            allowed_nodes=["Person", "Organization", "Location", "Event", "Concept"],  # 扩展允许节点类型以适应通用文档
+            allowed_relationships=["WORKS_AT", "LOCATED_IN", "PART_OF", "RELATED_TO", "HAS"],  # 扩展关系类型
+            ignore_tool_usage=True  # 关键修改：禁用tool calling以兼容DeepSeek
+            # 移除 node_properties 和 relationship_properties 以避免错误，因为DeepSeek不支持工具调用
+        )
+        docs = [Document(page_content=chunk) for chunk in chunks]
+        
+        # 添加进度条以监控图谱转换
+        progress = st.sidebar.progress(0)
+        graph_docs = []
+        for i, doc in enumerate(docs):
+            st.sidebar.info(f"🔄 转换图谱文档 {i+1}/{len(docs)}...")
+            graph_doc = transformer.convert_to_graph_documents([doc])  # 逐个处理以显示进度
+            graph_docs.extend(graph_doc)
+            progress.progress((i + 1) / len(docs))
 
-# —— 构建会话检索链 —— #
+        # 存储到 Neo4j
+        st.sidebar.info("💾 连接 Neo4j 并存储图谱...")
+        graph = Neo4jGraph(url=neo4j_uri, username=neo4j_username, password=neo4j_password)
+        # 先清除旧图谱以避免冲突
+        graph.query("MATCH (n) DETACH DELETE n")
+        graph.add_graph_documents(graph_docs, baseEntityLabel=True, include_source=True)
+
+        # 社区检测和总结（可选，提升全局搜索）
+        st.sidebar.info("🧩 执行社区检测...")
+        gds = GraphDataScience(neo4j_uri, auth=(neo4j_username, neo4j_password))
+        G, _ = gds.graph.project("rag_graph", "Entity", "*")  # 用*匹配所有关系，避免特定名错误
+        gds.leiden.write(G, writeProperty="community")
+        gds.graph.drop(G)  # 清理项目
+
+        st.sidebar.success(f'✅ 构建图谱：{len(graph_docs)} 个实体/关系')
+        return len(graph_docs)
+    except Exception as e:
+        st.sidebar.error(f"🚨 图谱构建失败：{str(e)}。请检查 Neo4j 连接、LLM 兼容性或依赖安装。如果是DeepSeek相关错误，确认ignore_tool_usage=True已启用。")
+        return 0
+
+# —— 构建会话检索链（基于图谱） —— #
 def get_chain():
-    db = FAISS.load_local(
-        'faiss_db',
-        embeddings,
-        allow_dangerous_deserialization=True
-    )
-    retriever = db.as_retriever(search_kwargs={"k": 800})
-
-    streamlit_handler = StreamlitCallbackHandler(st.container())
-    cb_manager = CallbackManager([streamlit_handler])
-
-    llm = init_chat_model(
-        'deepseek-reasoner',
-        model_provider='deepseek',
-        streaming=True,
-        callback_manager=cb_manager
-    )
-
-    memory = ConversationBufferMemory(
-        memory_key='chat_history',
-        return_messages=True
-    )
-    if 'history' in st.session_state:
-        memory.chat_memory.messages = st.session_state['history']
-
-    chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        memory=memory,
-        combine_docs_chain_kwargs={
-            'prompt': prompt_template,
-            'document_variable_name': 'context'
-        },
-        verbose=True,
-        return_source_documents=False
-    )
-    return chain
+    try:
+        st.sidebar.info("🔗 加载图谱并构建检索链...")
+        graph = Neo4jGraph(url=neo4j_uri, username=neo4j_username, password=neo4j_password)
+        streamlit_handler = StreamlitCallbackHandler(st.container())
+        cb_manager = CallbackManager([streamlit_handler])
+        llm = init_chat_model(
+            'deepseek-reasoner',
+            model_provider='deepseek',
+            streaming=True,
+            callback_manager=cb_manager,
+            api_key=deepseek_api_key  # 指定api_key
+        )
+        memory = ConversationBufferMemory(
+            memory_key='chat_history',
+            return_messages=True
+        )
+        if 'history' in st.session_state:
+            memory.chat_memory.messages = st.session_state['history']
+        chain = GraphQAChain.from_llm(
+            llm=llm,
+            graph=graph,
+            verbose=True,
+            memory=memory,
+            qa_prompt=prompt_template
+        )
+        st.sidebar.info("🔗 检索链构建完成")
+        return chain
+    except Exception as e:
+        st.error(f"🚨 链构建失败：{str(e)}。请确保 Neo4j 已运行并正确配置。")
+        return None
 
 def db_exists():
-    return os.path.isdir('faiss_db') and os.path.exists('faiss_db/index.faiss')
+    try:
+        graph = Neo4jGraph(url=neo4j_uri, username=neo4j_username, password=neo4j_password)
+        result = graph.query("MATCH (n) RETURN count(n) as count")
+        return result[0]['count'] > 0
+    except Exception:
+        return False
 
 # —— 主函数 —— #
 def main():
     st.set_page_config(
-        page_title='文档智能助手',
+        page_title='文档智能助手（GraphRAG 版）',
         page_icon='📄',
         layout='wide'
     )
-    st.title('📄 文档智能助手 v1.3.0')
+    st.title('📄 文档智能助手 v1.3.0 (GraphRAG 集成)')
     st.markdown(
         """
-        欢迎使用文档智能助手！
+        欢迎使用文档智能助手！现在集成 GraphRAG 以提升复杂查询准确性。
         - 支持 PDF 与纯文本（.txt）文件的上传与智能问答
+        - 使用知识图谱检索，支持实体关系查询
         - 实时检索与多轮对话记忆，采用 LangChain 官方接口
         - Streamlit 流式返回，让您直观地看到 LLM 推理过程
+        注意：确保 Neo4j 数据库运行，并设置环境变量 NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD。DeepSeek API 已兼容。
         """
     )
-
     # —— 侧边栏：文档管理 —— #
     st.sidebar.header('文档管理')
     uploaded_files = st.sidebar.file_uploader(
@@ -153,46 +194,41 @@ def main():
         accept_multiple_files=True,
         type=['pdf', 'txt']
     )
-
     if st.sidebar.button('🚀 Submit & Process', disabled=not uploaded_files):
         with st.spinner('📊 正在处理文件...'):
             count = process_documents(uploaded_files)
-            st.sidebar.success(f'✅ 分割出 {count} 个文本片段，向量索引已完成')
+            st.sidebar.success(f'✅ 处理完成 {count} 个图谱元素')
             if 'history' in st.session_state:
                 del st.session_state['history']
             st.rerun()
-
     if st.sidebar.button('🗑️ 清除数据库'):
-        if db_exists():
-            shutil.rmtree('faiss_db', ignore_errors=True)
-            st.sidebar.success('🗑️ 数据库已清除，历史已重置')
+        try:
+            st.sidebar.info("🗑️ 清除图谱...")
+            graph = Neo4jGraph(url=neo4j_uri, username=neo4j_username, password=neo4j_password)
+            graph.query("MATCH (n) DETACH DELETE n")
+            st.sidebar.success('🗑️ 图谱已清除，历史已重置')
             if 'history' in st.session_state:
                 del st.session_state['history']
             st.rerun()
-        else:
-            st.sidebar.info('无需清除，数据库不存在')
-
+        except Exception as e:
+            st.sidebar.error(f"🚨 清除失败：{str(e)}")
     if db_exists():
         st.sidebar.success('✅ 数据库状态：已就绪')
     else:
         st.sidebar.warning('⚠️ 请先上传并处理文件')
-
     # —— 仅在数据库就绪后构建链 —— #
     if db_exists():
         chain = get_chain()
     else:
         chain = None
-
     # —— 初始化 Session State —— #
     if 'history' not in st.session_state:
         st.session_state['history'] = []
     if 'stop_requested' not in st.session_state:
         st.session_state['stop_requested'] = False
-
     # 输入变化时重置停止标志
     def reset_stop():
         st.session_state['stop_requested'] = False
-
     # —— 中心区域：问答框 —— #
     outer_left, outer_center, outer_right = st.columns([0.00001, 6, 0.00001])
     with outer_center:
@@ -208,23 +244,20 @@ def main():
             st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
             if st.button('⏹️ 停止', key='stop_button', help="停止思考"):
                 st.session_state['stop_requested'] = True
-
     # —— 问答逻辑 —— #
     if user_question:
         with st.spinner('🤔 AI 正在思考...'):
             if chain is None:
                 st.error("请先在侧边栏上传并处理文件，再进行提问。")
             else:
-                # 1. 检索
-                docs = chain.retriever.get_relevant_documents(user_question)
-                # 2. 检查是否已点击停止
+                # 1. 检查是否已点击停止
                 if st.session_state['stop_requested']:
                     st.warning("⚠️ 已终止思考，如需重新提问，请修改输入框内容。")
                 else:
-                    # 3. 生成回答
+                    # 2. 生成回答
                     result = chain({"question": user_question})
-                    answer = result['answer']
-                    st.session_state['history'] = result['chat_history']
+                    answer = result['result']  # GraphQAChain 返回 'result'
+                    st.session_state['history'] = result.get('chat_history', [])  # 更新历史
                     st.markdown(f'**{answer}**')
     else:
         st.write('请通过侧边栏上传并处理文件，然后开始提问。')
