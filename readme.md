@@ -1,124 +1,86 @@
-# 📦 v1.3.0 — 功能增强与优化汇总
+# 文档智能助手
 
-### 一、架构与依赖管理
+这是一个本地文档问答工程。主应用是 `langchain_rag.py`，用于上传 PDF 或 TXT 文件、构建本地 FAISS 向量索引，并基于 DeepSeek 与 DashScope Embeddings 进行检索问答。
 
-- **多文件类型支持**  
-  - 新增对纯文本（`.txt`）文件的上传与处理，引入 `langchain.document_loaders.TextLoader`，从临时文件中读取并拼接文本。
+## 功能概览
 
-- **临时文件管理**  
-  - 对 TXT 文件写入临时文件后，完成加载即尝试删除，避免磁盘残留。
+- 支持 PDF、TXT 文件上传。
+- 使用 DashScope Embeddings 生成文本向量。
+- 使用 FAISS 在本地保存向量索引。
+- 支持 Similarity 和 MMR 两种检索模式。
+- 支持多轮对话历史。
+- 回答后只展示模型实际引用的来源片段。
+- 处理文档时显示抽取、分片、向量化和保存进度。
 
-- **依赖精简与升级**  
-  - 保持原有 PDF 处理依赖（`PyPDF2`、`RecursiveCharacterTextSplitter`、`DashScopeEmbeddings`、`FAISS` 等），新增 `tempfile` 用于跨平台文件处理。
+## 快速启动
 
-### 二、文档处理流程优化
+1. 创建并激活 Python 环境。
 
-- **统一处理函数**  
-  - 将上传的 PDF 和 TXT 文件合并到 `process_documents()`，一次性抽取文本、分割、索引并返回分片数量。
+2. 安装依赖：
 
-- **实时分割信息展示**  
-  - 在侧边栏显示“🔍 原始文本长度”（字符数）和“📦 分割得到 X 个文本片段”，让用户即时把握数据规模。
+```powershell
+pip install -r requirements.txt
+```
 
-- **错误与类型提示**  
-  - 对不支持的文件类型输出警告，若未抽取到任何文本则给予显著的错误提示，指导用户检查文件可读性。
+3. 复制 `.env.example` 为 `.env`，并填入本机真实 key：
 
-- **旧索引自动清理**  
-  - 每次处理前自动删除现有 `faiss_db` 目录，保证索引环境的一致性与可靠性。
+```env
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+DASHSCOPE_API_KEY=your_dashscope_api_key_here
+OPENWEATHER_API_KEY=your_openweather_api_key_here
+```
 
-### 三、检索与对话链改进
+4. 启动应用：
 
-- **检索数量可配置**  
-  - Retriever 默认 `search_kwargs={"k": 800}`，大幅提升检索深度，保证更全面的文档召回。
+```powershell
+python -m streamlit run langchain_rag.py --server.address 127.0.0.1 --server.port 8501
+```
 
-- **中断思考功能**  
-  - 在输入区旁新增“⏹️ 停止”按钮，可随时中断 LLM 推理流程，增强交互可控性。
+5. 在浏览器打开：
 
-- **流式回调优化**  
-  - 继续沿用 `StreamlitCallbackHandler` + `CallbackManager`，并优化容器布局，使流式推理输出更清晰、不卡顿。
+```text
+http://127.0.0.1:8501/
+```
 
-- **Prompt 模板维持严谨**  
-  - 沿用“三步（理解 → 检索 → 回答）”格式化系统提示词，确保模型仅基于上下文作答、不输出无根据内容。
+## 环境变量
 
-### 四、Session 管理与界面交互
+| 变量名 | 用途 |
+| --- | --- |
+| `DEEPSEEK_API_KEY` | 调用 DeepSeek 聊天模型生成回答 |
+| `DASHSCOPE_API_KEY` | 调用 DashScope Embeddings 生成向量 |
+| `OPENWEATHER_API_KEY` | 课程示例中的 OpenWeather API 配置 |
 
-- **宽屏布局**  
-  - `st.set_page_config` 增加 `layout='wide'`，更新页面标题为 “📄 文档智能助手 v1.3.0”，界面更友好。
+主应用会优先读取大写环境变量。为了兼容旧配置，`DASHSCOPE_API_KEY` 也兼容旧的 `dashscope_api_key`。
 
-- **三列主视图**  
-  - 左右极小留白（`[0.00001, 6, 0.00001]`），中间区域集中展示输入框、停止按钮与回答，视觉聚焦更佳。
+## 目录说明
 
-- **输入区细分**  
-  - 将用户输入框与“停止”按钮拆为 4:1 比例两列，并用 `<div style="height:28px">` 精确控制按钮位置。
+| 路径 | 说明 |
+| --- | --- |
+| `langchain_rag.py` | 当前主应用 |
+| `requirements.txt` | 主应用依赖 |
+| `.env.example` | 环境变量模板，可以提交到仓库 |
+| `.env` | 本机真实密钥文件，不应提交 |
+| `work/` | 运行时索引、备份、调试日志和过程文件目录，不进入 git |
+| `work/faiss_db/` | 应用运行时生成的 FAISS 索引目录 |
+| `LangChain公开课/` | 课程资料和示例脚本 |
+| `CHANGELOG.md` | 重要变更记录 |
 
-- **侧边栏文案更新**  
-  - 上传提示由“上传 PDF 文件”扩展为“上传 PDF 或 TXT 文件”，按钮文案、提示信息更具描述性。
+## 使用建议
 
-### 五、性能与健壮性优化
+- 第一次使用时先上传文档并点击“处理文档”。
+- 普通明确问题可以使用 Similarity。
+- 需要覆盖多个角度或长文档综合问题时，优先使用 MMR。
+- `k` 表示最终交给模型参考的片段数量。
+- MMR 模式下，`fetch_k` 表示先取多少候选片段再做多样性筛选。
 
-- **更大分片尺寸**  
-  - 将文本分割器 `chunk_size` 从 1000 提升至 2000，`chunk_overlap` 保持 200，提高索引构建效率。
+## 安全说明
 
-- **索引重建流程**  
-  - 每次处理前清空旧索引目录，模块化流程避免残留文件或异常序列化错误。
+- 不要提交 `.env`、日志、Notebook 输出或任何真实 API key。
+- 如果 key 曾经出现在 git、Notebook 输出、日志、截图或同步盘中，应到对应服务控制台 revoke/删除旧 key，并重新生成新 key。
+- 当前仓库不做 git history rewrite；历史中如果曾经提交过 key，仍应视为已泄漏。
+- `weather_server.py` 已改为读取 `OPENWEATHER_API_KEY`，不再硬编码 OpenWeather key。
 
-- **状态与重试提示**  
-  - 主界面根据 `faiss_db/index.faiss` 存在与否，分别展示“已就绪”或“请先上传并处理文件”提示，引导用户操作。
+## 仓库状态待处理
 
-- **会话清理同步**  
-  - 清除数据库时同步删除 `st.session_state['history']`，防止 Memory 与索引脱节导致运行异常。
-
-
-
-## 📦 v1.2.0 — 功能增强与优化汇总
-
-### 一、架构与依赖管理
-
-- **可配置的 dotenv 路径**  
-  - 新增 `DOTENV_PATH` 环境变量，优先加载指定路径的 `.env` 文件，增强部署灵活性。
-
-- **精简导入，移除冗余包**  
-  - 去掉了 `langchain.tools.retriever`、`langchain.agents` 等多余依赖，改用更轻量的 `ConversationalRetrievalChain`。
-
-### 二、PDF 处理流程优化
-
-- **自动清理旧索引**  
-  - 在每次重新处理时，自动删除已有的 `faiss_db` 目录，避免索引冲突或数据重复累积。
-
-- **统一文本拼接与分割**  
-  - 将 PDF 文本读取与分割合并到 `process_pdfs()`，返回分片数量并在侧边栏提示，简化流程。
-
-### 三、检索与对话链改进
-
-- **引入 ConversationalRetrievalChain**  
-  - 用 LangChain 官方 `ConversationalRetrievalChain.from_llm` 替代自定义 Agent，减少手写逻辑、提高稳定性。
-
-- **会话记忆（ConversationBufferMemory）**  
-  - 支持多轮对话历史缓存，将上下文注入至 Memory，用户可连续提问并得到上下文关联的回答。
-
-- **Streamlit 流式回调**  
-  - 通过 `StreamlitCallbackHandler` + `CallbackManager`，实现 LLM 推理过程的实时流式输出，提升用户体验。
-
-- **自定义系统模板**  
-  - 将原 prompt 拆分为更严谨的「理解 → 检索 → 回答」三步流程，保证仅依据文档内容作答，不产生无据推测。
-
-### 四、Session 管理与 UI 优化
-
-- **Session State 持久化**  
-  - 用 `st.session_state['history']` 存储对话历史，页面刷新（`st.rerun()`）后仍能保留上下文。
-
-- **按钮权限与反馈**  
-  - “Submit & Process” 与 “清除数据库” 按钮禁用/启用更合理；操作完成后自动刷新并给出成功/错误提醒。
-
-- **页面配置与排版**  
-  - 优化 `st.set_page_config`、标题、图标等信息；主界面与侧边栏布局更加清晰。
-
-### 五、错误处理与健壮性
-
-- **更完善的环境校验**  
-  - 检查 `faiss_db/index.faiss` 文件存在性；不存在时在主界面提示“请先处理 PDF”。
-
-- **容错加载**  
-  - 加载 FAISS 时开启 `allow_dangerous_deserialization=True`，并捕获异常给出重试建议。
-
-- **删除历史时同步清理 Memory**  
-  - 清除数据库时，同时删除会话历史，防止 Memory 与索引不匹配导致错误。
+- `dify` 当前在 git 中是 gitlink/submodule 形态，但仓库没有 `.gitmodules`，且工作区显示为删除状态。后续需要单独决定是补充 submodule 配置，还是从索引中移除。
+- `langchain_rag.zip` 当前显示为删除状态。后续需要确认是否仍要保留压缩包。

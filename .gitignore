@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+
+work/
+faiss_db/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+plot.png
+website_summary_*.pdf
+.streamlit/secrets.toml

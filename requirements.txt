@@ -1,0 +1,8 @@
+streamlit
+python-dotenv
+PyPDF2
+langchain
+langchain-community
+langchain-deepseek
+dashscope
+faiss-cpu
