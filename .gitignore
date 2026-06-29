@@ -7,6 +7,10 @@ faiss_db/
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+coverage.xml
 
 plot.png
 website_summary_*.pdf
