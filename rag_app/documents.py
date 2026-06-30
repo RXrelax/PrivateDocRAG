@@ -1,12 +1,11 @@
 from collections.abc import Callable
-import re
-import unicodedata
 
 from PyPDF2 import PdfReader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from .config import CHUNK_OVERLAP, CHUNK_SIZE
+from .text_normalization import normalize_cjk_text
 
 
 WarnCallback = Callable[[str], None]
@@ -26,9 +25,7 @@ def decode_text_bytes(raw_bytes: bytes) -> str:
 
 
 def normalize_document_text(text: str) -> str:
-    normalized = unicodedata.normalize("NFKC", text)
-    normalized = re.sub(r"[\u200b-\u200f\ufeff]", "", normalized)
-    return normalized
+    return normalize_cjk_text(text)
 
 
 def decode_text_file(file) -> str:

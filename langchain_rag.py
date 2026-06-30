@@ -7,6 +7,7 @@ from rag_app.model_services import clear_vector_store_cache
 from rag_app.qa import answer_question
 from rag_app.sources import build_retrieval_entries, build_source_entries
 from rag_app.ui import (
+    AnswerProgress,
     ProcessingProgress,
     apply_chat_style,
     render_app_header,
@@ -116,38 +117,46 @@ def main() -> None:
         st.markdown(user_question)
 
     with st.chat_message("assistant"):
-        with st.spinner("正在检索并生成回答..."):
-            try:
-                answer, source_documents = answer_question(
-                    user_question,
-                    retrieval_config,
-                    st.session_state.get("history", []),
-                    answer_style=answer_style,
-                )
-                source_entries = build_source_entries(answer, source_documents)
-                retrieval_entries = build_retrieval_entries(source_documents)
-                st.markdown(answer)
-                show_source_entries(source_entries)
-                show_retrieval_trace(retrieval_entries, retrieval_config)
-                st.session_state["history"].append(
-                    {
-                        "role": "assistant",
-                        "content": answer,
-                        "cited_sources": source_entries,
-                        "retrieved_sources": retrieval_entries,
-                        "retrieval_config": retrieval_config.__dict__,
-                    }
-                )
-            except RuntimeError as exc:
-                error_message = f"生成回答失败：{exc}"
-                st.error(error_message)
-                st.session_state["history"].append(
-                    {
-                        "role": "assistant",
-                        "content": error_message,
-                        "sources": [],
-                    }
-                )
+        st.markdown("**生成流程**")
+        answer_progress = AnswerProgress(
+            progress_bar=st.progress(0, text="准备生成回答"),
+            status_text=st.empty(),
+            detail_text=st.empty(),
+        )
+        try:
+            answer, source_documents, expanded_queries = answer_question(
+                user_question,
+                retrieval_config,
+                st.session_state.get("history", []),
+                answer_style=answer_style,
+                progress=answer_progress.update,
+            )
+            answer_progress.complete("已完成检索、引用整理和回答生成")
+            source_entries = build_source_entries(answer, source_documents)
+            retrieval_entries = build_retrieval_entries(source_documents)
+            st.markdown(answer)
+            show_source_entries(source_entries)
+            show_retrieval_trace(retrieval_entries, retrieval_config, expanded_queries)
+            st.session_state["history"].append(
+                {
+                    "role": "assistant",
+                    "content": answer,
+                    "cited_sources": source_entries,
+                    "retrieved_sources": retrieval_entries,
+                    "expanded_queries": expanded_queries,
+                    "retrieval_config": retrieval_config.__dict__,
+                }
+            )
+        except RuntimeError as exc:
+            error_message = f"生成回答失败：{exc}"
+            st.error(error_message)
+            st.session_state["history"].append(
+                {
+                    "role": "assistant",
+                    "content": error_message,
+                    "sources": [],
+                }
+            )
 
 
 if __name__ == "__main__":

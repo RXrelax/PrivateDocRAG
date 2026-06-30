@@ -29,6 +29,11 @@ class ProcessingProgress:
         self.update(100, "处理完成", detail)
 
 
+class AnswerProgress(ProcessingProgress):
+    def complete(self, detail: str) -> None:
+        self.update(100, "回答完成", detail)
+
+
 def apply_chat_style() -> None:
     st.markdown(
         """
@@ -152,11 +157,11 @@ def render_app_header(db_ready: bool, missing_config: list[str]) -> None:
 def render_retrieval_tooltips() -> None:
     st.markdown(
         """
-        <span title="按问题相似度返回最接近的片段，适合目标明确的查询。"
-              style="border-bottom: 1px dotted currentColor; cursor: help;">Similarity ?</span>
-        &nbsp;&nbsp;
-        <span title="兼顾相关性和结果多样性，适合需要覆盖多个角度的查询。"
+        <span title="MMR：先取一批候选片段，再兼顾相关性和多样性挑选结果；适合剧情梳理、章节总结、人物关系和多角度问题。"
               style="border-bottom: 1px dotted currentColor; cursor: help;">MMR ?</span>
+        &nbsp;&nbsp;
+        <span title="Similarity：按问题向量相似度找最接近的片段，适合查找明确的人物、章节、概念或原文附近内容；结果更集中，但覆盖面较窄。"
+              style="border-bottom: 1px dotted currentColor; cursor: help;">Similarity ?</span>
         """,
         unsafe_allow_html=True,
     )
@@ -165,66 +170,106 @@ def render_retrieval_tooltips() -> None:
 def render_sidebar(missing_config: list[str]) -> tuple[RetrievalConfig, str, list, bool, bool, bool]:
     st.sidebar.header("文档管理")
 
+    uploaded_files = st.sidebar.file_uploader(
+        "上传 PDF 或 TXT 文件",
+        accept_multiple_files=True,
+        type=["pdf", "txt"],
+    )
+    process_clicked = st.sidebar.button(
+        "处理文档",
+        disabled=not uploaded_files or bool(missing_config),
+    )
+    clear_clicked = st.sidebar.button("清除数据库")
+    reset_clicked = st.sidebar.button("重置对话")
+
     with st.sidebar.expander("高级检索设置", expanded=True):
         answer_style = st.selectbox(
             "回答详略",
             options=["详细解释", "标准回答", "简短回答"],
             index=0,
-            help="控制模型回答的展开程度。详细解释会更适合剧情梳理、章节总结和原因分析。",
+            help=(
+                "控制最终回答的展开程度，只影响回答生成，不影响检索。"
+                "详细解释适合剧情梳理、章节总结和原因分析；简短回答只保留核心结论。"
+            ),
         )
         render_retrieval_tooltips()
         mode = st.radio(
             "检索模式",
             options=["MMR 多样召回", "Similarity 精准匹配"],
             index=0,
+            help=(
+                "选择向量检索策略。Similarity 更适合明确查找；"
+                "MMR 会减少重复片段，适合总结、梳理和多角度问题。"
+            ),
         )
         retrieval_k = st.slider(
-            "返回片段数 k",
+            "k",
             min_value=1,
             max_value=20,
             value=DEFAULT_RETRIEVAL_K,
-            help="最终交给模型参考的片段数量。",
+            help=(
+                "向量检索阶段返回的片段数，不等于最终送入模型的总片段数。"
+                "调大可以提高召回，但也更容易带入无关片段。"
+            ),
         )
         keyword_search = st.checkbox(
             "关键词补召回",
             value=True,
-            help="结合本地关键词匹配，改善编号、专名、章节名等精确查询。",
+            help=(
+                "在向量检索之外，用本地关键词匹配补充片段。"
+                "适合章节名、编号、人物名、专名等精确查询，能弥补向量相似度漏召回。"
+            ),
         )
         query_expansion = st.checkbox(
             "智能改写查询",
             value=DEFAULT_QUERY_EXPANSION,
-            help="先用模型生成少量同义/别名/编号改写，再一起检索。会多调用一次聊天模型。",
+            help=(
+                "先用模型生成少量同义、别名、标题式或编号改写，再一起检索。"
+                "能提升召回，但会多调用一次聊天模型，所以会更慢、成本更高。"
+            ),
         )
         neighbor_window = st.slider(
-            "相邻片段补充",
+            "neighbor_window",
             min_value=0,
             max_value=2,
             value=DEFAULT_NEIGHBOR_WINDOW,
-            help="命中某个片段时，额外补充前后片段，减少上下文断裂。",
+            help=(
+                "命中某个片段后，额外补充前后相邻片段，减少上下文断裂。"
+                "适合连续剧情、过程说明和上下文依赖强的问题；调大后最终上下文会变长。"
+            ),
         )
         max_context_docs = st.slider(
-            "最多送入片段",
+            "max_context_docs",
             min_value=retrieval_k,
             max_value=24,
             value=max(DEFAULT_MAX_CONTEXT_DOCS, retrieval_k),
-            help="向量、关键词和相邻片段合并后，最多交给模型的片段数量。",
+            help=(
+                "向量结果、关键词补召回和相邻片段合并去重后，最终交给模型的片段上限。"
+                "它控制最终上下文规模，和 k 不是同一个阶段的参数。"
+            ),
         )
 
         if mode.startswith("MMR"):
             fetch_k = st.slider(
-                "候选池 fetch_k",
+                "fetch_k",
                 min_value=retrieval_k,
                 max_value=80,
                 value=max(DEFAULT_FETCH_K, retrieval_k),
-                help="MMR 先查看的候选片段数量，会自动不小于 k。",
+                help=(
+                    "MMR 先查看的候选池大小，会自动不小于 k。"
+                    "调大后 MMR 有更多候选可挑，覆盖面可能更好，但检索会更慢。"
+                ),
             )
             lambda_mult = st.slider(
-                "多样性 lambda_mult",
+                "lambda_mult",
                 min_value=0.0,
                 max_value=1.0,
                 value=DEFAULT_LAMBDA_MULT,
                 step=0.05,
-                help="越接近 1 越偏相关性，越接近 0 越偏多样性。",
+                help=(
+                    "MMR 的相关性权重。越接近 1 越重视与问题直接相关，结果更集中；"
+                    "越接近 0 越重视片段之间的差异，结果更多样。"
+                ),
             )
             retrieval_config = RetrievalConfig(
                 search_type="mmr",
@@ -248,17 +293,6 @@ def render_sidebar(missing_config: list[str]) -> tuple[RetrievalConfig, str, lis
                 query_expansion=query_expansion,
             )
 
-    uploaded_files = st.sidebar.file_uploader(
-        "上传 PDF 或 TXT 文件",
-        accept_multiple_files=True,
-        type=["pdf", "txt"],
-    )
-    process_clicked = st.sidebar.button(
-        "处理文档",
-        disabled=not uploaded_files or bool(missing_config),
-    )
-    clear_clicked = st.sidebar.button("清除数据库")
-    reset_clicked = st.sidebar.button("重置对话")
     return retrieval_config, answer_style, uploaded_files, process_clicked, clear_clicked, reset_clicked
 
 
@@ -278,9 +312,9 @@ def show_source_entries(source_entries: list[dict[str, str | int]]) -> None:
     if not source_entries:
         return
 
-    with st.expander(f"实际引用来源（{len(source_entries)}）", expanded=False):
+    with st.expander(f"答案引用到的候选片段（{len(source_entries)} 个）", expanded=False):
         for entry in source_entries:
-            st.markdown(f"**来源 {entry['number']}** · {entry['label']}")
+            st.markdown(f"**[来源{entry['number']}]** · {entry['label']}")
             if entry["preview"]:
                 st.caption(entry["preview"])
 
@@ -288,6 +322,7 @@ def show_source_entries(source_entries: list[dict[str, str | int]]) -> None:
 def show_retrieval_trace(
     retrieval_entries: list[dict[str, str | int]],
     retrieval_config: RetrievalConfig,
+    expanded_queries: list[str] | None = None,
 ) -> None:
     if not retrieval_entries:
         return
@@ -299,16 +334,23 @@ def show_retrieval_trace(
     if retrieval_config.keyword_search:
         settings += f"；关键词补召回={retrieval_config.keyword_k}"
     if retrieval_config.query_expansion:
-        settings += "；智能改写=开"
+        if expanded_queries:
+            settings += f"；智能改写={len(expanded_queries)} 条"
+        else:
+            settings += "；智能改写=无结果"
     if retrieval_config.neighbor_window:
         settings += f"；相邻片段=±{retrieval_config.neighbor_window}"
 
     with st.expander(f"检索过程（{len(retrieval_entries)} 个候选片段）", expanded=False):
         st.caption(settings)
+        if expanded_queries:
+            st.markdown("**智能改写查询**")
+            for query in expanded_queries:
+                st.caption(query)
         for entry in retrieval_entries:
             chars = entry.get("chars")
             char_text = f" · {chars} 字符" if chars else ""
-            st.markdown(f"**候选 {entry['number']}** · {entry['label']}{char_text}")
+            st.markdown(f"**[来源{entry['number']}]** · {entry['label']}{char_text}")
             if entry["preview"]:
                 st.caption(entry["preview"])
 
@@ -331,6 +373,7 @@ def render_chat_history() -> None:
                     show_retrieval_trace(
                         message.get("retrieved_sources", []),
                         RetrievalConfig(**retrieval_config),
+                        message.get("expanded_queries", []),
                     )
 
 

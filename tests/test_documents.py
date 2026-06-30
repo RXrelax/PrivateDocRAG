@@ -29,6 +29,7 @@ def test_decode_text_bytes_supports_gb18030() -> None:
 
 def test_normalize_document_text_fixes_compatibility_radicals() -> None:
     assert normalize_document_text("⽩⾻精") == "白骨精"
+    assert normalize_document_text("白⻣夫人和⻓老") == "白骨夫人和长老"
 
 
 def test_read_uploaded_txt_documents_keeps_metadata() -> None:
