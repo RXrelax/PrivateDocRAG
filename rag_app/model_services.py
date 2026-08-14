@@ -4,8 +4,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_deepseek import ChatDeepSeek
 
 from .env import get_dashscope_api_key, get_deepseek_api_key
-from .vector_store import get_index_version
 from .config import INDEX_DIR
+from .vector_store import get_index_version, index_operation_lock, validate_active_index
 
 
 @st.cache_resource(show_spinner=False)
@@ -22,24 +22,26 @@ def get_embeddings() -> DashScopeEmbeddings:
 
 @st.cache_resource(show_spinner=False)
 def load_cached_vector_store(
-    index_dir: str,
-    index_version: tuple[float, ...],
+    index_version: tuple[int, ...],
     dashscope_api_key: str,
 ) -> FAISS:
-    return FAISS.load_local(
-        index_dir,
-        get_cached_embeddings(dashscope_api_key),
-        allow_dangerous_deserialization=True,
-    )
+    with index_operation_lock():
+        validate_active_index()
+        return FAISS.load_local(
+            str(INDEX_DIR),
+            get_cached_embeddings(dashscope_api_key),
+            allow_dangerous_deserialization=True,
+        )
 
 
 def load_vector_store() -> FAISS:
     try:
-        return load_cached_vector_store(
-            str(INDEX_DIR),
-            get_index_version(),
-            get_dashscope_api_key(),
-        )
+        with index_operation_lock():
+            validate_active_index()
+            return load_cached_vector_store(
+                get_index_version(),
+                get_dashscope_api_key(),
+            )
     except Exception as exc:
         raise RuntimeError("加载本地向量索引失败，请清除数据库后重新处理文档。") from exc
 
@@ -54,4 +56,3 @@ def get_llm() -> ChatDeepSeek:
         api_key=get_deepseek_api_key(),
         streaming=False,
     )
-

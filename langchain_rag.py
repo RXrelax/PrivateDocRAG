@@ -45,14 +45,17 @@ def main() -> None:
         st.rerun()
 
     if clear_clicked:
-        if db_exists():
-            clear_index_files()
+        try:
+            removed = clear_index_files()
             clear_vector_store_cache()
-            st.sidebar.success("数据库已清除，历史已重置")
             reset_history()
+            if removed:
+                st.sidebar.success("已清除已知数据库文件、诊断日志并重置历史")
+            else:
+                st.sidebar.info("未找到可安全清除的已知数据库文件")
             st.rerun()
-        else:
-            st.sidebar.info("无需清除，数据库不存在")
+        except (OSError, RuntimeError):
+            st.sidebar.error("清理数据库失败，请检查 work/ 目录权限或未知内容。")
 
     render_app_header(db_exists(), missing_config)
 
