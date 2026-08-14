@@ -6,10 +6,10 @@ from dotenv import load_dotenv
 def load_environment() -> None:
     dotenv_path = os.getenv("DOTENV_PATH")
     if dotenv_path:
-        load_dotenv(dotenv_path, override=True)
+        load_dotenv(dotenv_path, override=False)
     else:
-        load_dotenv(override=True)
-    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+        load_dotenv(override=False)
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 
 def get_env(*names: str) -> str | None:
@@ -41,4 +41,3 @@ def get_deepseek_api_key() -> str:
     if not deepseek_api_key:
         raise RuntimeError("缺少 DEEPSEEK_API_KEY，无法生成回答。")
     return deepseek_api_key
-
