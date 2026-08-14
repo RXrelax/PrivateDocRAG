@@ -8,6 +8,10 @@ from .config import RetrievalConfig
 from .model_services import load_vector_store
 
 
+class RetrievalError(RuntimeError):
+    pass
+
+
 LOW_SIGNAL_TERMS = {
     "什么",
     "一下",
@@ -187,6 +191,7 @@ def get_ordered_documents(db) -> list[Document]:
 
 def document_key(doc: Document) -> tuple:
     return (
+        doc.metadata.get("document_id"),
         doc.metadata.get("source"),
         doc.metadata.get("chunk_id"),
         doc.metadata.get("page"),
@@ -303,26 +308,52 @@ def dedupe_documents(documents: list[Document]) -> list[Document]:
     return unique
 
 
+def document_scope_key(doc: Document) -> tuple[str, object] | None:
+    document_id = doc.metadata.get("document_id")
+    if document_id not in (None, ""):
+        return ("document_id", document_id)
+
+    source = doc.metadata.get("source")
+    if source in (None, ""):
+        return None
+    return ("source", source)
+
+
 def expand_with_neighbors(
     documents: list[Document],
     ordered_documents: list[Document],
     window: int,
     limit: int,
 ) -> list[Document]:
-    if window <= 0 or not documents:
-        return documents[:limit]
+    if limit <= 0:
+        return []
+
+    seed_documents = dedupe_documents(documents)[:limit]
+    if window <= 0 or not seed_documents or len(seed_documents) >= limit:
+        return seed_documents
 
     positions = {document_key(doc): index for index, doc in enumerate(ordered_documents)}
-    expanded = []
-    for doc in documents:
+    expanded = list(seed_documents)
+    seen = {document_key(doc) for doc in expanded}
+    for doc in seed_documents:
         position = positions.get(document_key(doc))
-        if position is None:
-            expanded.append(doc)
+        scope_key = document_scope_key(doc)
+        if position is None or scope_key is None:
             continue
-        start = max(0, position - window)
-        end = min(len(ordered_documents), position + window + 1)
-        expanded.extend(ordered_documents[start:end])
-    return dedupe_documents(expanded)[:limit]
+
+        for distance in range(1, window + 1):
+            for neighbor_position in (position - distance, position + distance):
+                if not 0 <= neighbor_position < len(ordered_documents):
+                    continue
+                neighbor = ordered_documents[neighbor_position]
+                neighbor_key = document_key(neighbor)
+                if neighbor_key in seen or document_scope_key(neighbor) != scope_key:
+                    continue
+                seen.add(neighbor_key)
+                expanded.append(neighbor)
+                if len(expanded) >= limit:
+                    return expanded
+    return expanded
 
 
 def unique_queries(question: str, expanded_queries: list[str] | None = None) -> list[str]:
@@ -337,7 +368,7 @@ def unique_queries(question: str, expanded_queries: list[str] | None = None) -> 
     return queries
 
 
-def retrieve_documents(
+def _retrieve_documents(
     question: str,
     retrieval_config: RetrievalConfig,
     expanded_queries: list[str] | None = None,
@@ -350,7 +381,7 @@ def retrieve_documents(
         vector_documents.extend(retriever.invoke(query))
 
     if not retrieval_config.keyword_search and retrieval_config.neighbor_window <= 0:
-        return vector_documents[: retrieval_config.max_context_docs]
+        return dedupe_documents(vector_documents)[: retrieval_config.max_context_docs]
 
     ordered_documents = get_ordered_documents(db)
     keyword_documents = []
@@ -368,3 +399,16 @@ def retrieve_documents(
         retrieval_config.neighbor_window,
         retrieval_config.max_context_docs,
     )
+
+
+def retrieve_documents(
+    question: str,
+    retrieval_config: RetrievalConfig,
+    expanded_queries: list[str] | None = None,
+) -> list[Document]:
+    try:
+        return _retrieve_documents(question, retrieval_config, expanded_queries)
+    except RetrievalError:
+        raise
+    except Exception as exc:
+        raise RetrievalError("检索文档失败，请确认索引完整且外部服务可用。") from exc
