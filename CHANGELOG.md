@@ -69,7 +69,7 @@
 - 将 `.env` 从 git 跟踪中移除，但不删除本机文件。
 - 将 `weather_server.py` 中的 OpenWeather key 改为读取 `OPENWEATHER_API_KEY`。
 - 清理 Notebook 输出，降低 API key、运行日志和中间结果继续泄漏的风险。
-- 未执行 git history rewrite；曾经暴露过的 DeepSeek、DashScope、OpenWeather key 仍需要在对应控制台手动 revoke 并重新生成。
+- 当时未执行 git history rewrite。2026-08 公开前逐对象复核未在当前树或所有可达 Git 对象中发现真实 DeepSeek、DashScope 或 OpenWeather key；此前“曾经暴露”表述缺少可验证证据，现予更正。
 
 ### 主应用路径与索引
 
