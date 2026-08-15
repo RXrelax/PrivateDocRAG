@@ -4,6 +4,8 @@
 
 work/
 faiss_db/
+.venv/
+venv/
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
@@ -11,6 +13,19 @@ __pycache__/
 .ruff_cache/
 htmlcov/
 coverage.xml
+.coverage
+
+*.db
+*.sqlite
+*.sqlite3
+*.faiss
+*.pkl
+*.log
+
+uploads/
+*.pdf
+*.docx
+*.zip
 
 plot.png
 website_summary_*.pdf

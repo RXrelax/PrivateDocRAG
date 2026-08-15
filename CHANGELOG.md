@@ -1,5 +1,22 @@
 # 变更记录
 
+## v1.6.0 - 2026-08-15
+
+### 公开作品集整理
+
+- README 顶部改为英文项目概览，补充真实架构、技术栈、复现步骤、离线验证、安全边界和限制。
+- 明确 DashScope、DeepSeek 与本地 FAISS/pickle 分别接收和保存的数据，不再把“本地索引”误解为“数据完全不离开设备”。
+- 移除主应用未使用的 OpenWeather 配置，补充虚拟环境、数据库、索引、日志和用户文档的忽略规则。
+- 统一当前 LangChain 1.x 依赖范围，PDF 解析从停止维护的 PyPDF2 迁移到 pypdf，并新增 Python 3.10/3.12 离线 CI。
+
+### 检索与索引可靠性
+
+- 相邻片段只在同一上传文档内补充，并保证任何上下文上限下都优先保留真正命中的片段。
+- 多查询检索路径统一去重；每个上传文件带有内部 `document_id`，避免同名文件混淆。
+- 新索引先写入独立 staging 目录并验证，再切换到正式目录；构建失败时保留旧索引。
+- 加载 pickle 前验证固定目录、普通文件和 manifest；清理流程可处理已知的半成品与诊断日志，但不递归删除未知内容。
+- prompt 明确把检索上下文和对话历史视为不可信数据，避免把文档内指令当作系统指令。
+
 ## v1.5.0 - 2026-06-30
 
 本次改动把工程从单文件实验形态整理为更适合个人长期使用的本地 RAG 工具。
@@ -52,7 +69,7 @@
 - 将 `.env` 从 git 跟踪中移除，但不删除本机文件。
 - 将 `weather_server.py` 中的 OpenWeather key 改为读取 `OPENWEATHER_API_KEY`。
 - 清理 Notebook 输出，降低 API key、运行日志和中间结果继续泄漏的风险。
-- 未执行 git history rewrite；曾经暴露过的 DeepSeek、DashScope、OpenWeather key 仍需要在对应控制台手动 revoke 并重新生成。
+- 当时未执行 git history rewrite。2026-08 公开前逐对象复核未在当前树或所有可达 Git 对象中发现真实 DeepSeek、DashScope 或 OpenWeather key；此前“曾经暴露”表述缺少可验证证据，现予更正。
 
 ### 主应用路径与索引
 

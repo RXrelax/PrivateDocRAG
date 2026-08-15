@@ -2,7 +2,7 @@ from collections.abc import Callable
 import re
 import unicodedata
 
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -59,7 +59,8 @@ def read_uploaded_documents(
     total_units = count_extraction_units(uploaded_files)
     completed_units = 0
 
-    for file in uploaded_files:
+    for upload_index, file in enumerate(uploaded_files, start=1):
+        document_id = f"upload-{upload_index}"
         if file.type == "application/pdf":
             try:
                 reader = PdfReader(file)
@@ -84,6 +85,7 @@ def read_uploaded_documents(
                             metadata={
                                 "source": file.name,
                                 "source_type": "pdf",
+                                "document_id": document_id,
                                 "page": page_number,
                             },
                         )
@@ -104,6 +106,7 @@ def read_uploaded_documents(
                         metadata={
                             "source": file.name,
                             "source_type": "txt",
+                            "document_id": document_id,
                         },
                     )
                 )

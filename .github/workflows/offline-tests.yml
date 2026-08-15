@@ -1,0 +1,37 @@
+name: Offline tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Check dependency consistency
+        run: python -m pip check
+      - name: Run offline tests
+        run: python -m pytest
+      - name: Import application modules
+        run: >-
+          python -c "import langchain_rag; import rag_app.documents,
+          rag_app.indexing, rag_app.qa, rag_app.retrieval,
+          rag_app.vector_store; print('IMPORT_OK')"
